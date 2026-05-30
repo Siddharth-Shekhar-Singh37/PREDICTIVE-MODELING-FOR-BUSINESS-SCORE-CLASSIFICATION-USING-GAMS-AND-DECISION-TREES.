@@ -1,6 +1,6 @@
 ---
 title: "Advance analytics and Machine learning Assignment"
-Name: Siddharth Shekhar Singh(40425947)
+Name: Siddharth Shekhar Singh
 date: "2024-05-01"
 output: word_document
 always_allow_html: true
