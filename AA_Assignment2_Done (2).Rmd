@@ -1,0 +1,754 @@
+---
+title: "Advance analytics and Machine learning Assignment"
+Name: Siddharth Shekhar Singh(40425947)
+date: "2024-05-01"
+output: word_document
+always_allow_html: true
+---
+INTRODUCTION
+The primary objective of this assignment is to apply advanced analytical techniques and machine learning models to predict the score of an online business based on various predictors. The assignment tasks involve the utilization of different datasets and the application of multiple modeling techniques to evaluate the performance of online businesses effectively, focusing on several aspects of data analysis using the R programming language.
+Procedure and Methodologies Employed:
+
+Initial Setup and Data Loading:
+The project began with setting up the R environment and loading essential libraries like tidymodels, tidyverse, and glmnet for data manipulation, modeling, and evaluation. The dataset, "student_merge_platform_business_file_final15.csv", was then loaded, setting the foundation for the subsequent stages of data exploration and preprocessing.
+
+Data Preprocessing:
+Early stages of data preprocessing involved addressing missing values, normalizing numerical predictors, and encoding categorical variables with dummy variables. These tasks were streamlined through a custom function trainTestSplit, which not only split the data into training and testing sets but also applied necessary data transformations.
+
+Exploratory Data Analysis (EDA):
+An extensive exploratory analysis helped us understand the distribution of variables, identify missing values, and visualize data characteristics. This phase was crucial for gaining deeper insights into the data and guiding the additional preprocessing required.
+
+Feature Engineering:
+We undertook significant feature engineering, converting the score into a binary classification system (low and high) and managing categorical variables effectively. This was a critical step for applying the classification models later in the analysis.
+
+Model Development:
+We developed several models to predict business scores, each tailored to capture different aspects of the data:
+•	LASSO Regression Model: This model focused on identifying key predictors using a penalization approach. We tuned the model using cross-validation to determine the optimal penalty.
+•	Generalized Additive Model (GAM): To handle non-linear relationships between predictors and the business score, we employed GAMs for different data subsets and evaluated their performance.
+•	Decision Tree Model: Chosen for its interpretability and efficacy in classification tasks, this model was tuned over several parameters to optimize predictive accuracy.
+
+Model Evaluation and Comparison:
+Each model's performance was meticulously assessed using relevant metrics. We utilized visualization tools such as ROC curves and confusion matrices to comprehensively present and compare the outcomes. This step was crucial to determining which model was most effective in predicting business scores.
+Conclusion and Insights:
+The final part of our report will synthesize the findings from each modeling approach, discuss the results' implications, and provide recommendations based on the models' predictive performance. This structured approach ensures a methodologically sound exploration and analysis, with detailed examinations to be discussed in the subsequent sections of the report.
+
+
+```{r Importing the libraries, echo=TRUE, warning=FALSE}
+
+
+library(tidyverse)
+library(naniar)
+library(knitr)
+library(xtable)
+library(RColorBrewer)
+library(SmartEDA)
+library(ggplot2)
+library(gam)
+library(viridis)
+library(glmnet)
+library(vip)
+library(embed)
+library(tidymodels)
+
+
+```
+
+# All the functions
+
+
+## 1) Train - Test Split Function
+```{r trainTestSplit function}
+
+trainTestSplit <- function(data){
+  set.seed(40425947)
+  
+  split <- initial_split(data, prop = 0.75, strata = category_score)
+  training_data <- training(split)
+  testing_data <- testing(split)
+  
+  recipe <- recipe(category_score ~., data = training_data) %>%
+    step_impute_knn(all_numeric_predictors()) %>%
+    step_impute_mode(all_factor_predictors()) %>%
+    step_normalize(all_numeric_predictors()) %>%
+    step_corr(all_numeric_predictors(), threshold = 0.9) %>%
+    step_dummy(all_factor_predictors()) %>%
+    step_zv(all_numeric(), -all_outcomes()) %>%
+    step_nzv(all_predictors()) 
+  
+  
+  return(list(split= split, training_data = training_data, testing_data = testing_data, recipe = recipe))
+  
+}
+```
+
+
+## 2) Lasso function
+```{r LASSO Model Function}
+lassoModelFunction <- function(subset_training_data, recipe){
+  # Set up your model so that the penalty is tuned automatically
+  model_lasso_tuned <- multinom_reg() %>% set_engine("glmnet") %>%
+    set_args(mixture = 1, penalty = tune()) 
+  
+  workflow_lasso_tuned <- workflow() %>%
+    add_model(model_lasso_tuned) %>%
+    add_recipe(recipe)
+  
+  # Configure a penalty grid with 30 levels
+  set.seed(40425947)
+  penalty_grid <- grid_regular(penalty(range = c(-3, 1)), levels = 30)
+  
+  set.seed(40425947)
+  resamples <- vfold_cv(subset_training_data, v = 5)
+  
+  tune_output <- tune_grid(workflow_lasso_tuned,
+    resamples = resamples,
+    metrics = metric_set(roc_auc),
+    grid = penalty_grid)
+  
+  l <- autoplot(tune_output)
+  l
+  
+  fit_tuned <- workflow_lasso_tuned %>% 
+  fit(subset_training_data)
+
+  top10 <- fit_tuned %>%
+  extract_fit_parsnip() %>%
+  vip(aesthetics = list(fill = "steelblue"), 10)
+  
+  top10
+  
+  
+  best_penalty <- select_by_one_std_err(tune_output,
+  metric = 'roc_auc', desc(penalty))
+
+  # Fit Final Model
+  final_fit<- finalize_workflow(workflow_lasso_tuned, best_penalty) %>%
+  fit(data = subset_training_data)
+
+  tidy(final_fit)
+  return(list(top10 = top10,l = l))
+  
+}
+
+
+```
+
+## 3) GAM function
+```{r GAM function }
+
+GAM_function <- function(formula, data){
+  
+
+  gam_model <- mgcv::gam(formula = formula,family = "binomial", data = data, method = "REML")
+  
+  
+  print(summary(gam_model))
+  
+   # Attempt to plot the GAM model with error handling
+  tryCatch({
+    plot(gam_model)
+  }, error = function(e) {
+    # Handle specific error related to plot.gam()
+    if (grepl("No terms to plot", e$message)) {
+      print("No terms available to plot. Check the formula used in the GAM model.")
+    } else {
+      # Handle other types of errors related to plot generation
+      print(paste("Error:", e$message))
+    }
+  })
+}
+
+```
+
+## 4) Decision Tree Model Function
+```{r decisionTreeModel function}
+
+decisionTreeModel <- function(subsets) {
+   set.seed(40425947)
+  # Split data into training and testing sets
+  split <- initial_split(subsets, prop = 0.75, strata = category_score)
+  training <- training(split)
+  testing <- testing(split)
+  
+  # Define decision tree model for tuning
+  dt_model_tune <- decision_tree(cost_complexity = tune(), tree_depth = tune(), min_n = tune()) %>%
+    set_mode("classification") %>%
+    set_engine("rpart")
+  
+  # Define classification metrics (accuracy, sensitivity, specificity)
+ # lead_metrics <- metric_set(accuracy, sens, specificity)
+  
+  # Define recipe for data preprocessing
+  dt_recipe <- recipe(category_score ~ ., data = training) %>%
+    step_impute_knn(all_numeric_predictors()) %>%
+    step_impute_mode(all_factor_predictors()) %>%
+    step_normalize(all_numeric_predictors()) %>%
+    step_corr(all_numeric_predictors(), threshold = 0.9) %>%
+    step_dummy(all_factor_predictors()) %>%
+    step_zv(all_numeric(), -all_outcomes()) %>%
+    step_nzv(all_predictors()) 
+  
+  # Create workflow for model tuning
+  dt_tune_wkf <- workflow() %>%
+    add_model(dt_model_tune) %>%
+    add_recipe(dt_recipe)
+  
+  # Tune the decision tree model using cross-validation
+  dt_tuning <- dt_tune_wkf %>% 
+    tune_grid(
+      resamples = vfold_cv(training, v = 10, strata = category_score), 
+      grid = grid_random(parameters(dt_model_tune), n = 5)
+     
+    )
+  
+  
+   # Select the best tuned decision tree model based on accuracy
+  best_dt_model <- dt_tuning %>% 
+    select_best(metric = 'accuracy')
+  
+  print(best_dt_model)
+  
+  # Finalize the workflow with the best model
+  final_leads_wkfl <- dt_tune_wkf %>% 
+    finalize_workflow(best_dt_model)
+  
+  # Fit the final model using the split data
+  leads_final_fit <- final_leads_wkfl %>% 
+    last_fit(split = split)
+  
+  # Collect final evaluation metrics
+  final_metrics <- leads_final_fit %>% 
+    collect_metrics() 
+  
+  print(final_metrics)
+  
+  # Collect predictions from the final model
+  predictions <- leads_final_fit %>% 
+    collect_predictions()
+  
+  # Plot ROC curve
+  roc_curve <- predictions %>% roc_curve(truth = category_score, .pred_high) %>% autoplot()
+  print(roc_curve)
+  
+  # Plot confusion matrix mosaic
+  mosaic <- conf_mat(predictions, truth = category_score, estimate = .pred_class) %>%
+    autoplot(type = 'mosaic')
+  
+  print(mosaic)
+  
+  # Plot confusion matrix heatmap
+  heatmap <- conf_mat(predictions, truth = category_score, estimate = .pred_class) %>%
+    autoplot(type = 'heatmap')
+  
+  print(heatmap)
+  
+ 
+}
+
+
+```
+
+#####################################################################################################################
+
+# Item A1
+```{r loading the data, echo=TRUE}
+
+data <- read.csv("student_merge_platform_business_file_final15.csv")
+
+class(data)
+
+print("Success - Data Loaded !!")
+
+```
+
+
+```{r Data Description, echo=FALSE}
+
+glimpse(data)
+
+# To Display the data
+head(data)
+
+```
+# Item A2
+```{r Genearating table of missing values}
+library(knitr)
+library(kableExtra)
+
+# Function to summarize NA and 0 values for each column
+summarize_blanks_zeros <- function(df) {
+  summary_df <- df %>% summarise_all(~ sum(is.na(.) | . == 0))
+  return(summary_df)
+}
+
+# Apply the function to dataset
+summary_blanks_zeros <- summarize_blanks_zeros(data)
+
+# View the summary
+print(summary_blanks_zeros)
+
+missing_data_counts <- colSums(is.na(data))
+
+# Creating a data frame for the table
+variable_table <- data.frame(
+  Variable = names(missing_data_counts),
+  MissingValues = missing_data_counts
+)
+
+# Generating the table
+kable(variable_table, format = "html", caption = "Count of Missing Values per Variable") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"), full_width = FALSE) %>%
+  column_spec(1, bold = TRUE, color = "blue") %>%
+  column_spec(2, background = "lavender")
+
+```
+
+
+
+
+```{r Summary of all the blank, warning=FALSE}
+
+# Setting up the plot area with larger margins
+par(mar = c(5, 8, 4, 2) + 0.3)  # Adjust margins (bottom, left, top, right)
+
+# Creating the barplot of missing values
+barplot(missing_data_counts,
+        main = "Missing Values",
+        col = brewer.pal(n = length(colnames(data)), name = "RdBu"),
+        las = 2,  # Rotate column names by 90 degrees for better fit
+        cex.names = 0.7,  # Reduce the size of column names
+        cex.axis = 0.7,  # Reduce the size of axis labels
+        cex.main = 0.8)  # Reduce the title font size
+
+
+library(visdat)
+library(ggplot2)
+
+# Create the missing data visualization
+vis_miss_plot <- vis_miss(data) +
+  labs(
+    title = "Missing Data Overview",
+    subtitle = "Data Presence by Variable"
+  ) +
+  theme_minimal(base_size = 10) +  # Using a smaller base font size for minimal theme
+  theme(
+    plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(size = 14, face = "bold"),
+    legend.position = "right",
+    legend.title = element_text(size = 12, face = "bold"),
+    legend.text = element_text(size = 10, face = "bold"),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 10, face = "bold"),
+    axis.text.y = element_text(size = 10, face = "bold"),
+    axis.title = element_blank()  # Remove axis titles
+  ) +
+  scale_fill_manual(values = c("TRUE" = "#A9A9A9", "FALSE" = "#556B2F"), 
+                    name = "Data Status", 
+                    labels = c("Missing" = "Absent", "Not missing" = "Present"))  # Using sober colors for a more professional look
+
+# Print the plot
+print(vis_miss_plot)
+
+
+```
+
+# Item A3
+```{r Columns datatype conversion}
+# Removing irrelevant column variables
+data <- data %>%
+  select(-c(business_id, Business_ID_other, ZIP.Code, postal_code, Platform))
+
+# converting the selected column in numeric
+data <- data %>%
+  mutate_at(vars(score, review_count, Tot_Clms_Services, Brnd_Tot_Clms_Services, Gnrc_Tot_Clms_Services, Othr_Tot_Clms_Services, Opioid_Tot_Clms_Services, Antbtc_Tot_Clms_Services, LIS_Tot_Clms_Services), as.numeric)
+
+# Converting the selected columns which were numeric into factor
+data <- data %>%
+  mutate_at(vars(CEO_sch_cat, CEO_grd_yr,field_cat), as.factor)
+
+# Converting the categorical variables into factor
+data <- data %>%
+  mutate(across(where(is.character), as.factor))
+
+# Filling the blank rows in the `Rural_metropolitan_Desc` with `NA`
+data <- data %>%
+  mutate(Rural_metropolitan_Desc = ifelse(Rural_metropolitan_Desc == "", NA, Rural_metropolitan_Desc))
+
+
+```
+
+
+# Item A4
+```{r}
+library(ggplot2)
+library(viridis)
+# Categorical variables list
+categorical_vars <- c("city", "state", "Gender", "field_cat", "Rural_metropolitan_Desc")
+
+# Update bar plots for categorical variables
+categorical_plots <- lapply(categorical_vars, function(var) {
+  ggplot(data, aes_string(x = var, fill = as.factor(data$score))) +
+    geom_bar(position = "dodge") +
+    scale_fill_viridis(discrete = TRUE) +  # Apply viridis color scale
+    labs(title = paste("Bar Plot of", var), x = var, y = "Count") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    guides(fill = guide_legend(title = "Score"))
+})
+
+# Print the first plot to verify changes
+print(categorical_plots[[2]])
+print(categorical_plots[[3]])
+print(categorical_plots[[1]])
+print(categorical_plots[[4]])
+print(categorical_plots[[5]])
+
+library(dplyr)
+library(knitr)
+library(kableExtra)
+
+#GENERATING TABLES WITH LEVEL VARIBALES AND COUNTS  
+
+# Categorical variables
+categorical_vars <- c("city", "state", "Gender", "field_cat", "Rural_metropolitan_Desc")
+
+# Function to create and print a table for each variable
+create_count_tables <- function(data, vars) {
+  tables_list <- list()
+  
+  for (var in vars) {
+    # Summarize counts for each category of the variable
+    summary_table <- data %>%
+      group_by(!!sym(var)) %>%
+      summarise(Count = n(), .groups = 'drop') %>%
+      arrange(desc(Count))  # Sorting by Count for better readability
+
+    # Generating the table with kable and style it
+    tables_list[[var]] <- kable(summary_table, format = "html", caption = paste("Counts of", var)) %>%
+      kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE) %>%
+      column_spec(1, bold = TRUE, color = "blue") %>%
+      column_spec(2, background = "lavender")
+  }
+  
+  return(tables_list)
+}
+
+# Creating tables
+tables_output <- create_count_tables(data, categorical_vars)
+
+# printing tables 
+
+tables_output[["state"]] 
+tables_output[["Gender"]] 
+
+```
+INSIGHTS
+The exploratory data analysis conducted on the dataset, particularly focusing on categorical variables such as state, gender, and rural versus metropolitan status, provides crucial insights into the characteristics of the dataset and informs the strategy for model building. Here are some insights and the rationale behind the selection of these fields:
+1.	State Distribution: The bar plot of states reveals significant variations in the distribution of scores across different states. For instance, states like PA, FL, and AZ not only have high data counts but also show varied distributions across different scores, indicating state-specific trends that could affect business scores. This diversity in the data suggests that 'state' could be a significant predictor of business scores, capturing regional differences that might influence the ratings.
+2.	Gender Distribution: Analysis of gender distribution shows a disparity in counts between males (M) and females (F), with males being more prevalent in the dataset. The score distribution across genders also varies, suggesting potential gender-based differences in scoring patterns. This could imply that gender may play a role in how businesses are perceived or rated, making it an important variable for understanding influences on business scores.
+3.	Rural vs. Metropolitan Description: The plot for rural versus metropolitan descriptions indicates that the majority of data points are classified under a few categories, with a clear predominance of metropolitan areas. This categorization helps in distinguishing between different types of geographical settings, which could significantly influence business performance and scores. The stark contrast between the number of businesses in metropolitan versus rural settings could highlight differences in business dynamics and customer interactions based on location.
+The selection of these fields for deeper analysis and inclusion in modeling efforts is driven by their potential to capture key aspects of demographic, geographic, and social factors that are likely to influence business scores. By incorporating these variables, the models can more accurately reflect the complex reality in which these businesses operate, potentially improving the predictability and relevance of the analytical outcomes. This strategic choice is supported by the observed data distributions and their implications on the business environment, guiding the development of models 
+
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(viridis)
+
+# Assuming data transformation has already occurred:
+data <- data %>%
+  mutate(category_score = case_when(
+    score <= 3 ~ "low",
+    score > 3 ~ "high"
+  )) %>%
+  mutate(
+    score = as.factor(score),
+    category_score = as.factor(category_score)
+  )
+# Score Distribution using ggplot2 with viridis
+score_plot <- ggplot(data, aes(x = score, fill = score)) +
+  geom_bar(stat = "count") +
+  scale_fill_viridis(discrete = TRUE, option = "C") +
+  labs(title = "`Score` Distribution", x = "Score", y = "Count") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), plot.title = element_text(face = "bold"))
+
+# Category Score Distribution using ggplot2 with viridis
+category_score_plot <- ggplot(data, aes(x = category_score, fill = category_score)) +
+  geom_bar(stat = "count") +
+  scale_fill_viridis(discrete = TRUE, option = "D") +
+  labs(title = "`category_score` Distribution", x = "Category Score", y = "Count") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), plot.title = element_text(face = "bold"))
+
+# Display the plots
+print(score_plot)
+print(category_score_plot)
+
+```
+```{r}
+# removing  the "score"  
+data <- data %>% select(-c(score))
+```
+
+
+
+
+# Subset Generation
+```{r subset_generation based on fields}
+# Field 59   
+subset1_field_59 <- data %>% filter(field_cat %in% c(59,51, 28, 57, 45, 76, 75, 69, 55, 49))
+
+# Field 18
+subset2_field_18 <- data %>% filter(field_cat %in% c(5, 46, 60, 59, 48,  41, 62, 58, 33))
+
+# Field 45 
+subset3_field_45 <- data %>% filter(field_cat %in% c(67, 61, 43, 23,47,18, 10, 3))
+```
+
+
+# Train - Test Generation
+```{r train test generation on all the subsets }
+
+data_field_18 <- trainTestSplit(data = subset2_field_18) 
+data_field_59 <- trainTestSplit(data = subset1_field_59) 
+data_field_45 <- trainTestSplit(data = subset3_field_45) 
+
+```
+
+
+
+## Lasso Subset - 1
+```{r lasso subset_1, warning=FALSE}
+lasso_model_subset1 <- lassoModelFunction(subset_training_data = data_field_59$training_data, 
+                                          recipe = data_field_59$recipe)
+lasso_model_subset1
+
+```
+
+
+### Top 10 Variables for subset - 1  
+```{r subset1_field_59_after_lasso }
+train1 <- data_field_59$recipe %>%
+  prep(data_field_59$training_data)
+
+field59_after_lasso <- train1$template %>% select(c(city_Tucson,state_AZ, state_NJ, city_Philadelphia, state_PA, field_cat_X49, CEO_grd_yr_X2015, city_Tampa, CEO_sch_cat_X108, state_FL)) %>% mutate(category_score = data_field_59$training_data$category_score)
+
+formula_1 <- category_score ~ city_Tucson + state_AZ + state_NJ + city_Philadelphia + state_PA + field_cat_X49 + CEO_grd_yr_X2015 + city_Tampa + CEO_sch_cat_X108 + state_FL
+
+
+```
+
+
+## Lasso subset - 2
+```{r lasso subset_2, warning=FALSE}
+
+lasso_model_subset2 <- lassoModelFunction(subset_training_data = data_field_18$training_data, recipe = data_field_18$recipe)
+lasso_model_subset2
+
+```
+
+
+### Top 10 Variables for subset - 2  
+```{r subset2_field_18_after_lasso, warning=FALSE}
+train2 <- data_field_18$recipe %>%
+  prep(data_field_18$training_data)
+
+field18_after_lasso <- train2$template %>% select(state_NJ, state_AZ, CEO_grd_yr_X2000, state_FL, state_PA, state_MO, city_Tampa, city_Philadelphia, state_ID, field_cat_X59) %>% mutate(category_score = data_field_18$training_data$category_score)
+
+formula_2 <- category_score ~ state_NJ + state_AZ + CEO_grd_yr_X2000 + state_FL + state_PA + state_MO + city_Tampa + city_Philadelphia + state_ID + field_cat_X59
+
+```
+
+
+## Lasso subset - 3
+```{r lasso subset_3, warning=FALSE}
+lasso_model_subset3 <- lassoModelFunction(subset_training_data = data_field_45$training_data, recipe = data_field_45$recipe)
+
+lasso_model_subset3
+
+```
+
+### Top 10 Variables for subset - 3  
+```{r subset3_field_45_after_lasso, warning=FALSE}
+train3 <- data_field_45$recipe %>%
+  prep(data_field_45$training_data)
+
+field45_after_lasso <- train3$template %>% select(CEO_grd_yr_X2009, CEO_grd_yr_X2004, state_TN, city_Nashville, CEO_sch_cat_X210, field_cat_X61, CEO_grd_yr_X2006, state_PA, field_cat_X3, field_cat_X10) %>% mutate(category_score = data_field_45$training_data$category_score)
+
+formula_3 <- category_score ~ CEO_grd_yr_X2009 + CEO_grd_yr_X2004 + state_TN + city_Nashville + CEO_sch_cat_X210 + field_cat_X61 + CEO_grd_yr_X2006 + state_PA + field_cat_X3 + field_cat_X10
+
+```
+REGULARIZATION EFFECTS AND MODEL INTERPRETATION
+Regularization Plots:
+•	Across all subsets, the ROC-AUC seems to be stable at lower levels of regularization (higher lambda values) but starts to peak as the amount of regularization decreases (moving towards less penalization).
+•	This pattern suggests that a moderate level of regularization helps the model by preventing overfitting, while too little regularization allows the model to overfit, resulting in lower generalizability on unseen data.
+•	The optimal lambda value (where ROC-AUC is highest before it drops) indicates the best balance between bias and variance for the model.
+Variable Importance:
+1.	Subset 1 
+•	The top variables impacting the model include location-specific factors such as city_Tucson, state_AZ, state_NJ, city_Philadelphia, and state_PA. This indicates a strong regional influence on business scores.
+•	Variables related to the CEO's graduation year and specific business fields (field_cat) also play significant roles, suggesting that leadership and field-specific dynamics are critical in predicting business performance.
+
+2.	Subset 2 
+•	In this subset, state_NJ and state_AZ are again prominent, underscoring the importance of geographic factors in influencing business scores.
+•	The CEO's graduation year and certain cities (city_Tampa, city_Philadelphia) also appear as important predictors. This reflects both the influence of leadership qualities and local market conditions.
+
+3.	Subset 3 
+•	The variables like state_NJ and CEO_grd_yr_X2000 top the list, indicating the relevance of both the regional regulatory environment and the era of leadership training.
+•	Other state variables (state_FL, state_MO, and state_PA) and city names (city_Tampa and city_Philadelphia) suggest that local factors are crucial in shaping business scores across various regions.
+Insights and Strategic Implications:
+•	Regional Influence: The recurring importance of state and city variables across all subsets suggests that regional factors such as local economic conditions, regulatory environments, and cultural elements significantly affect business scores. This insight could be strategically used to tailor business practices to regional specifics.
+•	Leadership Impact: The prominence of variables related to the CEO's graduation year across subsets suggests that leadership qualities, possibly influenced by education and era, significantly impact business outcomes. This could imply the need for ongoing leadership development tailored to evolving business landscapes.
+•	Field-Specific Dynamics: The appearance of field_cat variables indicates that industry-specific factors also play a significant role in determining business scores. Understanding these dynamics could help businesses in targeted fields to optimize their strategies according to industry trends.
+The analysis not only highlight what factors are most influential in determining business scores but also underscore the value of regional and leadership adjustments in strategic business planning. By focusing on these key variables, businesses can better position themselves in competitive markets and adapt to local and industry-specific challenges.
+
+
+
+# ITEM - B2 : GAM Model Building
+
+## Subset - 1
+```{r GAM for subset - 1}
+
+GAM_MODEL1<-GAM_function(formula = formula_1, data = field59_after_lasso)
+
+```
+
+
+
+## Subset - 2
+```{r GAM for subset - 2}
+
+GAM_MODEL2<-GAM_function(formula = formula_2, data = field18_after_lasso)
+
+```
+
+
+
+## Subset - 3
+```{r GAM for subset - 3}
+
+GAM_MODEL3<-GAM_function(formula = formula_3, data = field45_after_lasso)
+
+```
+
+
+INTERPRETATIONS AND INSIGHTS FROM GAM MODEL
+
+Overview of GAM Results: The results from our Generalized Additive Models (GAM) for three different subsets provide some interesting insights into what might influence business scores. Even though the models explain a relatively small part of the variability in scores (with deviance explained ranging around 1.61% to 2.24%), they highlight the importance of specific factors like geographical location, leadership years, and business sectors.
+Subset 1 Insights:
+•	Model Performance: The explained deviance is relatively low at 2.24%, suggesting that while the model captures some variability in the data, a significant portion of the outcome variability remains unexplained by the predictors included.
+•	Significant Predictors: Notably, state_NJ positively influences the score, suggesting that businesses in New Jersey are more likely to have a high score compared to the reference category. Conversely, city_Philadelphia and field_cat_X49 have negative impacts, indicating a lower likelihood of high scores for businesses in Philadelphia or those classified under field_cat_X49.
+•	Leadership Influence: CEO_grd_yr_X2015 shows a positive but mild effect, implying that more recent leadership (graduates of 2015) slightly increases the likelihood of higher business scores.
+Subset 2 Insights:
+•	Model Performance: Similar to Subset 1, the explained deviance is also low at 1.9%, indicating that other unmodeled factors may be influencing the business scores.
+•	Geographic Impact: Both state_NJ and state_AZ show a positive influence, reinforcing the idea that regional factors significantly affect business scores. The negative coefficient for city_Tampa suggests a lower probability of high scores, which might reflect local economic or business challenges.
+•	Leadership and Timing: CEO_grd_yr_X2000 also positively influences scores, indicating that the leadership qualities or conditions around the year 2000 favorably impact business evaluations.
+Subset 3 Insights:
+•	Model Performance: This subset has the lowest explained deviance at 1.61%, highlighting the complexity and potential oversights in capturing influential factors in the model.
+•	Leadership Dynamics: Leadership appears as a strong theme with CEO_grd_yr_X2009 and CEO_grd_yr_X2004 both showing positive impacts. This could suggest that leadership qualities from these years align well with factors that contribute to higher business scores.
+•	Localized Effects: state_TN and city_Nashville do not show significant impacts despite being anticipated to influence business scores, possibly due to counterbalancing factors that the model does not account for.
+
+General Observations Across Subsets:
+•	The consistently low R-squared values across all subsets imply that the models may need additional predictors or different modeling techniques to better capture the complexities of what influences business scores.
+•	The significance and impact of geographic and leadership-related variables across all subsets highlight the importance of considering both macro (state) and micro (city, leadership years) factors in strategic business analysis.
+
+
+# ITEM - B3 : Decision Tree Model
+
+
+## Decision Tree Model on Subset - 1 
+```{r decision tree model for subset - 1 } 
+dt_subset_1 <- decisionTreeModel(subsets = field59_after_lasso)
+
+dt_subset_1
+
+```
+
+
+## Decision Tree Model on Subset - 2
+```{r decision tree model for subset - 2 } 
+dt_subset_2 <- decisionTreeModel(subsets = field18_after_lasso)
+
+dt_subset_2
+```
+
+
+
+
+## Decision Tree Model on Subset - 3 
+```{r decision tree model for subset - 3 }
+dt_subset_3 <- decisionTreeModel(subsets = field45_after_lasso)
+dt_subset_3
+```
+INTERPRETATIONS AND INSIGHTS FROM DECISION TREE MODEL
+
+Overview of Decision Tree Results: We analyzed the performance of our decision tree models using ROC curves and confusion matrices for different subsets. These tools help us see how well our models are predicting high and low business scores.
+ROC Curve Insights:
+•	General Performance: All of the ROC curves are way above the diagonal line, which means our models are doing much better than just random guessing. This is a great start because it shows our models have learned something significant from the data.
+•	Shape and Implication: The curves are closer to the top-left corner, which is ideal. This positioning suggests that our models have a good balance of sensitivity (catching true high scores correctly) and specificity (correctly avoiding false alarms). Even though we can't see the exact AUC (Area Under the Curve), the closer these curves hug the top-left corner, the better our models are performing overall.
+Confusion Matrix Analysis:
+1.	First Subset Analysis:
+•	It looks like our model tends to predict 'high' more than 'low'. This could be because there are more high scores in the data or maybe our model prefers classifying scores as high.
+•	We noticed quite a few false positives – cases where the model thought the score would be high but it was actually low. This could be tricky if it's really important for our application not to overestimate scores.
+2.	Second Subset Analysis:
+•	This subset showed a better mix of high and low predictions, but there's still a noticeable number of mistakes (both false positives and false negatives).
+•	The accuracy here seems better, suggesting some improvement or perhaps this subset just aligns better with our model’s strengths.
+3.	Third Subset Analysis:
+•	Again, like the first subset, there’s a lean towards predicting scores as 'high'. Depending on why we're using this model, we might need to adjust it to reduce this high-score bias.
+•	If predicting low scores accurately is crucial, we definitely need to tweak our model or get more varied data to train on.
+
+Student Perspective
+From a student's perspective, analyzing these outputs is crucial for understanding not just how well the model performs, but also where it might fail and why. This understanding can guide further refinements in the model and help in better aligning it with the business objectives, such as more accurately identifying businesses needing attention or those excelling in their operations. Exploring model adjustments or even considering alternative modeling approaches based on these insights could be beneficial steps for future projects.
+Conclusion: Overall, diving into these model outputs has been super helpful. It's not just about building a model but understanding its strengths and weaknesses. By looking at where it performs well and where it doesn't, we can make informed decisions on how to improve it, ensuring our models work well in real-world scenarios and truly meet the needs of our project.
+
+
+
+
+Comparative Analysis of GAM and Decision Tree Models for Predicting Category Scores
+Introduction
+In this report, we evaluate and compare the performance of Generalized Additive Models (GAM) and Decision Tree models developed to predict category scores across three distinct data subsets. Each model's efficacy is assessed based on various statistical metrics, including R-squared, Deviance Explained, and the confusion matrix-derived measures (Accuracy, Sensitivity, Specificity). This comparative analysis aims to determine which modeling approach yields the best performance for predicting category scores within our dataset.
+Model Evaluations
+GAM Models:
+•	GAM_MODEL1:
+•	Formula: Category score predicted by geographical locations and specific categorical attributes.
+•	Performance Metrics: Adjusted R-squared of 0.0255 and Deviance Explained of 2.24%.
+•	Significant Predictors: Include state and city indicators such as state_NJ, city_Philadelphia, suggesting location-specific influences.
+•	GAM_MODEL2:
+•	Formula: Focuses on state impacts and temporal attributes of CEOs.
+•	Performance Metrics: Achieved an adjusted R-squared of 0.0213 and Deviance Explained of 1.9%.
+•	Significant Predictors: state_NJ, state_AZ, CEO_grd_yr_X2000.
+•	GAM_MODEL3:
+•	Formula: Encompasses detailed CEO attributes and location factors.
+•	Performance Metrics: The lowest explanatory power with an adjusted R-squared of 0.0157 and Deviance Explained of 1.61%.
+•	Significant Predictors: CEO_grd_yr_X2009, CEO_grd_yr_X2004.
+Decision Tree Models: The performance of the Decision Tree models is evaluated based on their respective confusion matrices. The primary metrics extracted include:
+•	Accuracy: Overall correctness of the model.
+•	Sensitivity (Recall): Ability of the model to correctly predict positive instances.
+•	Specificity: Effectiveness in identifying negative instances.
+•	Subset 1:
+•	Accuracy: Approximately 62%
+•	Sensitivity: 94%
+•	Specificity: 29%
+•	Subset 2:
+•	Accuracy: Roughly 56%
+•	Sensitivity: 72%
+•	Specificity: 46%
+•	Subset 3:
+•	Accuracy: Near 65%
+•	Sensitivity: 78%
+•	Specificity: 55%
+Discussion
+Upon comparing the GAM and Decision Tree models across all three subsets, the following observations are noted:
+•	GAM Models generally exhibit very low R-squared values across all subsets, suggesting minimal variance in category scores is explained by the models. This could indicate either the insufficiency of the predictors chosen or the linear nature of GAMs might not capture the complexities within the data effectively.
+•	Decision Tree Models, while also not displaying overwhelmingly high accuracy, perform better in terms of raw prediction accuracy compared to GAMs. They tend to have higher sensitivity, particularly in Subset 1.
+Conclusion
+Based on the evaluated metrics, Decision Tree models generally yield better performance compared to GAMs for this specific prediction task. The higher sensitivity rates suggest that Decision Trees might be more adept at identifying higher-risk categories, which can be particularly useful in practical scenarios where false negatives are more detrimental. However, the trade-off includes lower specificity, indicating a higher rate of false positives.
+For future modeling efforts, it may be beneficial to explore more complex ensemble methods like Random Forests or boosting techniques that could potentially harness the strengths of Decision Trees while mitigating their weaknesses. Additionally, further feature engineering in GAMs and including interaction terms might provide more insights and enhanced predictive performance.
+
+
+
+
+
+
+
+
+
